@@ -44,6 +44,9 @@ function scrapePaizaJobs() {
     const url = row[0];
     if (!url) return;
 
+    // 2025/12/10 1行追記　edi:kunii
+    Utilities.sleep(2000); // ★ここで必ず一息いれる
+
     let job = null;
     let memo = '';
 
