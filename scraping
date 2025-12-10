@@ -1,0 +1,155 @@
+**
+ * paiza求人URL一覧から、JobPosting(JSON-LD)を抜き出してシートにまとめる
+ */
+function scrapePaizaJobs() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const listSheet = ss.getSheetByName('企業一覧');
+  if (!listSheet) {
+    throw new Error('「企業一覧」シートがありません');
+  }
+
+  // 出力用シート準備
+  const outSheetName = '求人一覧';
+  let outSheet = ss.getSheetByName(outSheetName);
+  if (!outSheet) {
+    outSheet = ss.insertSheet(outSheetName);
+  } else {
+    outSheet.clearContents();
+  }
+
+  // ヘッダー
+  outSheet.appendRow([
+    'No',
+    'URL',
+    '会社名',
+    'タイトル',
+    '雇用形態',
+    '勤務地(都道府県)',
+    '勤務地(市区町村)',
+    '勤務地(住所)',
+    '想定年収min',
+    '想定年収max',
+    '勤務時間',
+    '福利厚生(raw)',
+    'リモートっぽい？(description内キーワード)',
+    '説明文(先頭200文字)'
+  ]);
+
+  const lastRow = listSheet.getLastRow();
+  if (lastRow < 2) return;
+
+  const urls = listSheet.getRange(2, 1, lastRow - 1, 1).getValues();
+
+  urls.forEach((row, idx) => {
+    const url = row[0];
+    if (!url) return;
+
+    let job = null;
+    let memo = '';
+
+    try {
+      const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+      const html = res.getContentText('UTF-8');
+      job = extractJobPostingFromHtml(html);
+      if (!job) {
+        memo = 'JobPosting JSONが見つからない';
+      }
+    } catch (e) {
+      memo = '取得エラー: ' + e;
+    }
+
+    if (!job) {
+      outSheet.appendRow([idx + 1, url, memo]);
+      return;
+    }
+
+    // 各種フィールド取り出し
+    const company = job.hiringOrganization && job.hiringOrganization.name || '';
+    const title = job.title || '';
+    const employmentType = Array.isArray(job.employmentType)
+      ? job.employmentType.join(', ')
+      : (job.employmentType || '');
+
+    const address = job.jobLocation && job.jobLocation.address || {};
+    const region = address.addressRegion || '';
+    const locality = address.addressLocality || '';
+    const street = address.streetAddress || '';
+
+    const salary = job.baseSalary && job.baseSalary.value || {};
+    const minSalary = salary.minValue || '';
+    const maxSalary = salary.maxValue || '';
+
+    const workHours = job.workHours || '';
+    const benefits = job.jobBenefits || '';
+
+    // 説明文はHTMLタグを削って先頭だけ
+    const descRaw = job.description || '';
+    const descPlain = cleanHtmlTags(descRaw);
+    const descHead = descPlain.substring(0, 200);
+
+    // リモートっぽいか雑フラグ（キーワードヒット）
+    const remoteKeywords = ['リモート', 'フルリモート', '在宅', 'テレワーク'];
+    const remoteFlag = remoteKeywords.some(k => descPlain.indexOf(k) !== -1) ? '◎' : '';
+
+    outSheet.appendRow([
+      idx + 1,
+      url,
+      company,
+      title,
+      employmentType,
+      region,
+      locality,
+      street,
+      minSalary,
+      maxSalary,
+      workHours,
+      benefits,
+      remoteFlag,
+      descHead
+    ]);
+  });
+}
+
+/**
+ * HTML文字列から <script type="application/ld+json"> の中身を抜き、
+ * @type == JobPosting のオブジェクトを返す
+ */
+function extractJobPostingFromHtml(html) {
+  const scriptRegex = /<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/g;
+  let match;
+  while ((match = scriptRegex.exec(html)) !== null) {
+    const jsonText = match[1].trim();
+    try {
+      const obj = JSON.parse(jsonText);
+
+      // 一つのオブジェクトの場合
+      if (obj['@type'] === 'JobPosting') {
+        return obj;
+      }
+
+      // 配列 or ネストの中にある場合の保険
+      if (Array.isArray(obj)) {
+        const jp = obj.find(o => o['@type'] === 'JobPosting');
+        if (jp) return jp;
+      }
+    } catch (e) {
+      // JSONじゃないscriptも混じってるので無視
+      continue;
+    }
+  }
+  return null;
+}
+
+/**
+ * JSON-LD description内の <strong> 等HTMLタグをざっくり削除
+ */
+function cleanHtmlTags(text) {
+  if (!text) return '';
+  // \u003c / \u003e を実際の < > に変換してからタグ削除
+  let t = text.replace(/\\u003c/g, '<').replace(/\\u003e/g, '>');
+  t = t.replace(/<br\s*\/?>/gi, '\n'); // 改行っぽくする
+  t = t.replace(/<\/p>/gi, '\n');
+  t = t.replace(/<[^>]+>/g, '');      // タグ削除
+  t = t.replace(/\s+\n/g, '\n');
+  return t.trim();
+}
