@@ -1,0 +1,80 @@
+function fetchPaizaJobsIncremental() {
+  const ss = SpreadsheetApp.getActive();
+  const srcSheet = ss.getSheetByName('企業一覧');
+  const dstSheet = ss.getSheetByName('求人一覧');
+
+  const lastRow = srcSheet.getLastRow();
+  const urlValues = srcSheet.getRange(2, 1, lastRow - 1, 1).getValues(); // A2:A
+
+  // ★ 出力シートに存在するURLを記録しておく
+  const existingUrls = getExistingUrls(dstSheet);
+
+  const output = [];
+
+  urlValues.forEach((row, idx) => {
+    const url = row[0];
+    if (!url) return;
+
+    // ★ すでに存在するならスキップ
+    if (existingUrls.has(url)) return;
+
+    Utilities.sleep(2000); // アクセス制限対策
+
+    const srcRow = idx + 2; // 元Sheetの行番号
+
+    try {
+      const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+      const html = res.getContentText('UTF-8');
+      const job = extractJobPostingFromHtml(html);
+
+      if (!job) {
+        output.push([srcRow, url, '取得失敗', '', '', '', '', '', '']);
+        return;
+      }
+
+      const title = job.title || '';
+      const company = (job.hiringOrganization && job.hiringOrganization.name) || '';
+      const address = (job.jobLocation && job.jobLocation.address && job.jobLocation.address.addressRegion) || '';
+      const salary = job.baseSalary && job.baseSalary.value || {};
+      const minSalary = salary.minValue || '';
+      const maxSalary = salary.maxValue || '';
+
+      output.push([
+        srcRow,
+        url,
+        company,
+        title,
+        address,
+        minSalary,
+        maxSalary,
+        job.employmentType || '',
+        job.workHours || ''
+      ]);
+
+    } catch (e) {
+      output.push([srcRow, url, 'エラー: ' + e, '', '', '', '', '', '']);
+    }
+  });
+
+  if (output.length > 0) {
+    dstSheet.getRange(dstSheet.getLastRow() + 1, 1, output.length, output[0].length).setValues(output);
+  }
+}
+
+
+/**
+ * ★ 出力済みURLを Map(Set)型で集める
+ */
+function getExistingUrls(dstSheet) {
+  const lastRow = dstSheet.getLastRow();
+  const urlSet = new Set();
+
+  if (lastRow >= 2) {
+    const urls = dstSheet.getRange(2, 2, lastRow - 1, 1).getValues(); // col Bを取得
+    urls.forEach(row => {
+      if (row[0]) urlSet.add(row[0]);
+    });
+  }
+
+  return urlSet;
+}
